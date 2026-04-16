@@ -10,7 +10,7 @@ TIMEZONE="Europe/Berlin"
 H_NAME="artix"
 
 DISK=""
-WITH_HOME="no"
+WITH_HOME="n"
 
 EFI_SIZE="1024"
 
@@ -208,7 +208,7 @@ prepare_disk() {
     # ROOT
     sgdisk -n 2:0:+${ROOT_MB}M -t 2:8300 "$DISK"
 
-    if [[ "$WITH_HOME" == "yes" ]]; then
+    if [[ "$WITH_HOME" == "y" ]]; then
         # HOME (directly after root)
         if [[ "$HOME_SIZE" == "max" ]]; then
             sgdisk -n 3:0:0 -t 3:8300 "$DISK"
@@ -231,7 +231,7 @@ prepare_disk() {
     ROOT_PART="${DISK}2"
     SWAP_PART="${DISK}3"
 
-    if [[ "$WITH_HOME" == "yes" ]]; then
+    if [[ "$WITH_HOME" == "y" ]]; then
         HOME_PART="${DISK}3"
         SWAP_PART="${DISK}4"
     fi
