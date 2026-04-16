@@ -162,7 +162,7 @@ validate_sizes() {
 
     disk_gb=$(disk_size_gb)
 
-    local overhead=2
+    local overhead=1
     local efi=1
 
     usable_gb=$((disk_gb - overhead - efi))
