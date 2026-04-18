@@ -28,17 +28,6 @@ create_user() {
     sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
 }
 
-install_drivers() {
-    local pkgs=""
-    if lspci | grep -qi "nvidia"; then pkgs="nvidia-dkms nvidia-utils"
-    elif lspci | grep -qi "intel"; then pkgs="xf86-video-intel"
-    elif lspci | grep -qi "amd"; then pkgs="xf86-video-amdgpu"; fi
-    
-    local virt=$(systemd-detect-virt || echo "none")
-    [[ "$virt" == "oracle" ]] && pkgs="$pkgs virtualbox-guest-utils-$INIT"
-    [[ -n "$pkgs" ]] && pacman -S --noconfirm $pkgs
-}
-
 setup_audio() {
     echo "1) Pipewire 2) PulseAudio 3) None"
     read -rp "Audio: " ac
@@ -77,6 +66,21 @@ setup_desktop() {
         dinit)  mkdir -p /etc/dinit.d/boot.d; ln -s ../$dm /etc/dinit.d/boot.d/ ;;
         s6)     s6-rc-bundle-update add default $dm ;;
     esac
+}
+
+install_drivers() {
+    echo "--- Hardware Drivers ---"
+    read -rp "Install detected hardware drivers (GPU/VM)? (y/N): " drv_ans
+    [[ ! "$drv_ans" =~ ^([yY])$ ]] && return 0
+
+    local pkgs=""
+    if lspci | grep -qi "nvidia"; then pkgs="nvidia-dkms nvidia-utils"
+    elif lspci | grep -qi "intel"; then pkgs="xf86-video-intel"
+    elif lspci | grep -qi "amd"; then pkgs="xf86-video-amdgpu"; fi
+    
+    local virt=$(systemd-detect-virt || echo "none")
+    [[ "$virt" == "oracle" ]] && pkgs="$pkgs virtualbox-guest-utils-$INIT"
+    [[ -n "$pkgs" ]] && pacman -S --noconfirm $pkgs
 }
 
 enable_arch_repos() {
@@ -124,9 +128,9 @@ cleanup() {
 main() {
     setup_networking
     create_user
-    install_drivers
     setup_audio
     setup_desktop
+    install_drivers
     enable_arch_repos
     install_bonus_tools
     cleanup
