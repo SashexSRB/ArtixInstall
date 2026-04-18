@@ -4,24 +4,20 @@
 #   ARTIX POST-INSTALL TRIGGER (profile.d)
 # =======================================================
 
-# Privilege check
 if [[ "$EUID" -ne 0 ]]; then
     return
 fi
 
-# Setup already done?
 if [[ -f /var/lib/artix-firstboot-done ]]; then
     # Lock exists?
     rm -f /etc/profile.d/firstboot.sh 2>/dev/null
     return
 fi
 
-# Firstboot.sh exists?
 if [[ ! -f /usr/local/bin/firstboot.sh ]]; then
     return
 fi
 
-# Echo the prompt
 clear
 echo "======================================="
 echo "   ARTIX POST-INSTALLATION WIZARD      "
@@ -33,6 +29,7 @@ echo "This wizard will help you with:"
 echo " - Network connectivity (Wi-Fi)"
 echo " - User creation (with your chosen shell)"
 echo " - Graphics and Desktop Environment"
+echo " - Along with some other extra tools!"
 echo "======================================="
 echo
 

@@ -1,60 +1,45 @@
 #!/bin/bash
 set -euo pipefail
 
+# The UNIX philosophy: One tool, one job
 MODE=""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Root check
-if [[ "$EUID" -ne 0 ]]; then
-    echo "[ERROR] Please run as root (sudo)."
-    exit 1
-fi
+check_root() {
+    if [[ "$EUID" -ne 0 ]]; then
+        echo "[ERROR] This script must be run as root (sudo)."
+        exit 1
+    fi
+}
 
-#################
-# ARG PARSING
-#################
-
-for arg in "$@"; do
-    case "$arg" in
-        -a | --auto)
-            MODE="auto"
+dispatch() {
+    case "$MODE" in
+        auto)
+            [[ -f "$SCRIPT_DIR/scripts/install_auto.sh" ]] || { echo "Auto script missing"; exit 1; }
+            chmod +x "$SCRIPT_DIR/scripts/install_auto.sh"
+            exec "$SCRIPT_DIR/scripts/install_auto.sh"
             ;;
-        -m | --manual)
-            MODE="manual"
-            ;;
-        -h | --help)
-            echo "Usage: ./install [-a|--auto] [-m|--manual]"
-            exit 0
+        manual)
+            [[ -f "$SCRIPT_DIR/scripts/install_manual.sh" ]] || { echo "Manual script missing"; exit 1; }
+            chmod +x "$SCRIPT_DIR/scripts/install_manual.sh"
+            exec "$SCRIPT_DIR/scripts/install_manual.sh"
             ;;
         *)
-            echo "[ERROR] Unknown option: $arg"
+            echo "Usage: ./install [-a|--auto] [-m|--manual]"
             exit 1
             ;;
     esac
+}
+
+check_root
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -a|--auto)   MODE="auto"; shift ;;
+        -m|--manual) MODE="manual"; shift ;;
+        -h|--help)   echo "Usage: ./install [-a|--auto] [-m|--manual]"; exit 0 ;;
+        *) echo "Unknown option: $1"; exit 1 ;;
+    esac
 done
 
-if [[ -z "$MODE" ]]; then
-    echo "[ERROR] No mode selected. Use -a or -m."
-    exit 1
-fi
-
-# Sub-script checking
-chmod +x "$SCRIPT_DIR/scripts/"*.sh 2>/dev/null || true
-
-#################
-# DISPATCH
-#################
-
-if [[ "$MODE" == "manual" ]]; then
-    if [[ ! -f "$SCRIPT_DIR/scripts/install_manual.sh" ]]; then
-        echo "[ERROR] install_manual.sh not found."
-        exit 1
-    fi
-    exec bash "$SCRIPT_DIR/scripts/install_manual.sh"
-elif [[ "$MODE" == "auto" ]]; then
-    if [[ ! -f "$SCRIPT_DIR/scripts/install_auto.sh" ]]; then
-        echo "[ERROR] install_auto.sh not found."
-        exit 1
-    fi
-    exec bash "$SCRIPT_DIR/scripts/install_auto.sh"
-fi
+dispatch
