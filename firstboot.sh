@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # INIT Detection
-# Pokušavamo da detektujemo koji init sistem zapravo trči na instaliranom sistemu
+# We're trying to detect which INIT system is being used (Changed from Serbian)
 INIT="openrc"
 if [ -d /run/runit ]; then 
     INIT="runit"
@@ -19,7 +19,7 @@ setup_network() {
         return 0
     fi
 
-    # Start iwd servis pre pokretanja iwctl-a
+    # Start iwd service
     case "$INIT" in
         openrc) rc-service iwd start 2>/dev/null || true ;;
         dinit)  dinitctl start iwd 2>/dev/null || true ;;
@@ -40,15 +40,14 @@ create_user() {
         exit 1
     fi
 
-    # LOGIKA ZA SHELL (Fork feature)
-    # Čitamo šta je korisnik izabrao u instaleru, inače fallback na bash
+    # Shell logic EDIT: I forgot to change commments to English.
     local FINAL_SHELL="/bin/bash"
     if [[ -f /tmp/shell_choice ]]; then
         FINAL_SHELL=$(cat /tmp/shell_choice)
         echo "[*] Using selected shell: $FINAL_SHELL"
     fi
 
-    # Pravljenje korisnika sa ispravnim shell-om
+    # User creation
     useradd -m -G wheel,audio,video,storage,input -s "$FINAL_SHELL" "$USERNAME"
     echo "[*] Setting password for $USERNAME:"
     passwd "$USERNAME"
@@ -59,7 +58,7 @@ create_user() {
         pacman -Sy --noconfirm sudo
     fi
 
-    # Otkomentariši wheel grupu u sudoers fajlu
+    # Wheel group
     sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers 2>/dev/null || \
     sed -i 's/^# %wheel ALL=(ALL) ALL/%wheel ALL=(ALL) ALL/' /etc/sudoers
 }
