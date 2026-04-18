@@ -1,229 +1,274 @@
 #!/bin/bash
 set -euo pipefail
 
-#################
-# CONFIG
-#################
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 LOCALE="en_US.UTF-8"
 TIMEZONE="Europe/Berlin"
 H_NAME="artix"
 
-DISK=""
-WITH_HOME="n"
-
-EFI_SIZE="1024"
-
-ROOT_SIZE=""
-SWAP_SIZE=""
-HOME_SIZE=""
-
-EFI_PART=""
-ROOT_PART=""
-SWAP_PART=""
-HOME_PART=""
-
+# Editable VARs
+INIT=""
+X_SERVER=""
+DE_PKGS=""
+ADD_ARCH_REPOS="no"
 ROOTPASS=""
-ROOTPASS_CONFIRM=""
 
-#################
-# UTILS
-#################
-
-pause() {
-    read -rp "Press ENTER to continue..."
-}
+# Fork options
+AUDIO_PKGS=""
+BT_PKGS=""
+USER_SHELL="/bin/bash"
+SHELL_PKGS=""
+ELOGIND_PKGS=""
 
 hr() {
-    echo "---------------------------------------"
+    echo "--------------------------------------------------------"
 }
 
-#################
-# CHECKS
-#################
-
-check_efi() {
-    [[ -d /sys/firmware/efi ]] || {
-        echo "[ERROR] EFI mode required."
-        exit 1
-    }
-}
-
-ensure_tools() {
-    echo "Installing required tools..."
-    pacman -Sy --noconfirm gptfdisk parted
-}
-
-ask_passwords() {
-    echo
-    echo "[!] Root password setup"
-    hr
-
-    read -rsp "Enter root password: " ROOTPASS
-    echo
-    read -rsp "Confirm root password: " ROOTPASS_CONFIRM
-    echo
-
-    [[ "$ROOTPASS" == "$ROOTPASS_CONFIRM" ]] || {
-        echo "[ERROR] Passwords do not match."
-        exit 1
-    }
-
-    if [[ -z "$ROOTPASS" ]]; then
-        echo "[ERROR] Empty password not allowed."
+# Live USB INIT system
+detect_init() {
+    if [ -f /run/runit/runsvdir/current ]; then
+        INIT="runit"
+    elif [ -d /run/openrc ]; then
+        INIT="openrc"
+    elif [ -d /run/dinit ]; then
+        INIT="dinit"
+    elif [ -f /run/s6/services ]; then
+        INIT="s6"
+    else
+        echo "[ERROR] Could not detect init system."
         exit 1
     fi
+    echo "[*] Detected init system: $INIT"
 }
 
-#################
-# DISK SELECTION
-#################
-
-show_disks() {
-    echo "[*] Current disks layout:"
-    hr
-    lsblk -f
-    hr
-}
-
+# Detect mounts
 detect_mounted() {
-    echo
-    echo "[*] Detecting mounted system..."
     hr
-
-    ROOT_PART=$(findmnt -n -o SOURCE /mnt 2>/dev/null || true)
-    EFI_PART=$(findmnt -n -o SOURCE /mnt/boot/efi 2>/dev/null || true)
-    HOME_PART=$(findmnt -n -o SOURCE /mnt/home 2>/dev/null || true)
-
-    SWAP_PART=$(swapon --noheadings --raw 2>/dev/null | awk 'NR==1 {print $1}' || true)
-
-    echo "ROOT: $ROOT_PART"
-    echo "EFI:  $EFI_PART"
-    echo "HOME: ${HOME_PART:-[not mounted]}"
-    echo "SWAP: ${SWAP_PART:-[not active]}"
-
-    # REQUIRED check
-    if [[ -z "$ROOT_PART" ]]; then
-        echo "[ERROR] Root partition is not mounted at /mnt"
+    echo "[*] Checking mount points..."
+    if ! findmnt /mnt >/dev/null; then
+        echo "[ERROR] Nothing mounted on /mnt. Please mount your Root partition."
         exit 1
     fi
-
-    # OPTIONAL: warn but don't fail
-    if [[ -z "$EFI_PART" ]]; then
-        echo "[WARN] EFI partition not mounted at /mnt/boot/efi"
+    if ! findmnt /mnt/boot/efi >/dev/null; then
+        echo "[ERROR] Nothing mounted on /mnt/boot/efi. Please mount your EFI partition."
+        exit 1
     fi
-
-    if [[ -z "$SWAP_PART" ]]; then
-        echo "[WARN] No active swap detected"
-    fi
-
-    # HOME is optional by design
-    if [[ -z "$HOME_PART" ]]; then
-        echo "[INFO] No /home partition detected (optional)"
-    fi
+    echo "[✓] Partitions correctly mounted."
 }
 
-#################
-# BASE INSTALL
-#################
-
-install_base() {
-    echo "[5] Installing base system..."
+# Pacman setup + Util setup
+ensure_tools() {
     hr
+    echo "[*] Optimizing pacman and enabling Galaxy repo..."
+    
+    # Parallel downloads
+    sudo sed -i 's/#ParallelDownloads = 5/ParallelDownloads = 10/' /etc/pacman.conf
+    
+    # Galaxy repos
+    if ! grep -q "^\[galaxy\]" /etc/pacman.conf; then
+        echo -e "\n[galaxy]\nInclude = /etc/pacman.d/mirrorlist-galaxy" | sudo tee -a /etc/pacman.conf
+    fi
 
-    basestrap /mnt \
-        base base-devel linux linux-firmware \
-        runit elogind-runit \
-        grub efibootmgr \
-        fastfetch nano \
-        dhcpcd dhcpcd-runit \
-        iwd iwd-runit
+    sudo pacman -Sy --noconfirm artix-install-scripts
 }
 
-gen_fstab() {
-    echo "[6] Generating filesystem table..."
-    fstabgen -U /mnt >>/mnt/etc/fstab
-}
-
-#################
-# CHROOT CONFIG
-#################
-
-configure_system() {
-    echo "[7] System config (chroot)..."
+# X server + DE + Extras
+ask_options() {
     hr
+    read -rsp "Enter root password: " ROOTPASS; echo
+    
+    hr
+    echo "Choose X Server:"
+    echo "1) Xorg (Standard)"
+    echo "2) Xlibre (Modern fork)"
+    read -rp "Selection [1-2]: " x_choice
+    if [[ "$x_choice" == "2" ]]; then
+        X_SERVER="xlibre-xserver xlibre-xserver-common xlibre-input-libinput"
+    else
+        X_SERVER="xorg-server xorg-xinit xf86-input-libinput"
+    fi
 
-    read -rp "Timezone (e.g. Europe/Berlin [default]): " TIMEZONE
+    hr
+    echo "Choose Desktop Environment:"
+    echo "1) XFCE"
+    echo "2) LXQt"
+    echo "3) LXDE"
+    echo "4) None"
+    read -rp "Selection [1-4]: " de_choice
+    case "$de_choice" in
+        1) DE_PKGS="xfce4 xfce4-goodies lightdm lightdm-$INIT lightdm-gtk-greeter" ;;
+        2) DE_PKGS="lxqt sddm sddm-$INIT" ;;
+        3) DE_PKGS="lxde sddm sddm-$INIT" ;;
+        *) DE_PKGS="" ;;
+    esac
 
+    hr
+    echo "--- Fork Extras ---"
+    echo "Choose Audio System:"
+    echo "1) Pipewire (Modern/Recommended)"
+    echo "2) PulseAudio (Classic)"
+    echo "3) None"
+    read -rp "Selection [1-3]: " ac
+    case "$ac" in
+        1) AUDIO_PKGS="pipewire pipewire-pulse wireplumber pipewire-$INIT" ;;
+        2) AUDIO_PKGS="pulseaudio pulseaudio-$INIT" ;;
+    esac
+
+    hr
+    read -rp "Install Bluetooth Support? (y/N): " bc
+    if [[ "$bc" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+        BT_PKGS="bluez bluez-$INIT"
+    fi
+
+    hr
+    echo "Choose Default Shell:"
+    echo "1) Bash (Standard)"
+    echo "2) Zsh (Advanced)"
+    read -rp "Selection [1-2]: " sc
+    if [[ "$sc" == "2" ]]; then
+        USER_SHELL="/bin/zsh"
+        SHELL_PKGS="zsh zsh-completions"
+    else
+        USER_SHELL="/bin/bash"
+    fi
+
+    hr
+    read -rp "Enable Elogind? (Highly recommended for DEs) (Y/n): " ec
+    if [[ "$ec" =~ ^([nN][oO]|[nN])$ ]]; then
+        ELOGIND_PKGS=""
+    else
+        ELOGIND_PKGS="elogind-$INIT"
+    fi
+
+    hr
+    echo "WARNING: Arch Repos can be unstable on Artix!"
+    read -rp "Enable Arch Linux Repositories? (y/N): " arch_ans
+    if [[ "$arch_ans" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+        ADD_ARCH_REPOS="yes"
+    fi
+}
+
+# Main
+main() {
+    # Is UEFI?
+    if [[ ! -d /sys/firmware/efi ]]; then echo "[ERROR] UEFI required."; exit 1; fi
+    
+    detect_init
+    detect_mounted
+    ensure_tools
+    ask_options
+
+    hr
+    # AMD or Intel? (Microcode)
+    local ucode=""
+    if grep -q "GenuineIntel" /proc/cpuinfo; then ucode="intel-ucode"; else ucode="amd-ucode"; fi
+    
+    # Graphics drivers
+    local gpu_driver=""
+    if lspci | grep -qi "vga\|display"; then
+        if lspci | grep -qi "nvidia"; then
+            gpu_driver="nvidia-dkms nvidia-utils"
+        elif lspci | grep -qi "intel"; then
+            [[ "$X_SERVER" == *"xlibre"* ]] && gpu_driver="xlibre-video-intel" || gpu_driver="xf86-video-intel"
+        elif lspci | grep -qi "amd\|ati"; then
+            [[ "$X_SERVER" == *"xlibre"* ]] && gpu_driver="xlibre-video-amdgpu" || gpu_driver="xf86-video-amdgpu"
+        fi
+    fi
+
+    # Is a VM?
+    local vm_tools=""
+    local virt_type=$(systemd-detect-virt || echo "none")
+    if [[ "$virt_type" == "oracle" ]]; then 
+        vm_tools="virtualbox-guest-utils-$INIT"
+    elif [[ "$virt_type" == "vmware" ]]; then
+        vm_tools="open-vm-tools-$INIT"
+    fi
+
+    local extra_pkgs=""
+    if [[ "$ADD_ARCH_REPOS" == "yes" ]]; then extra_pkgs="artix-archlinux-support"; fi
+
+    echo "[*] Basestrap in progress with selected components..."
+    basestrap /mnt base base-devel linux linux-firmware $ucode \
+        $INIT $ELOGIND_PKGS grub efibootmgr os-prober \
+        dhcpcd dhcpcd-$INIT iwd iwd-$INIT nano \
+        $X_SERVER $gpu_driver $DE_PKGS $AUDIO_PKGS $BT_PKGS $SHELL_PKGS $vm_tools $extra_pkgs
+    
+    echo "[*] Generating fstab..."
+    fstabgen -U /mnt >> /mnt/etc/fstab
+
+    # Swap math
+    local total_ram=$(free -m | awk '/^Mem:/{print $2}')
+    local swap_size=$((total_ram * 2))
+
+    # DM?
+    local dm_service=""
+    [[ "$DE_PKGS" =~ "lightdm" ]] && dm_service="lightdm"
+    [[ "$DE_PKGS" =~ "sddm" ]] && dm_service="sddm"
+
+    echo "[*] Entering chroot for configuration..."
     artix-chroot /mnt /bin/bash <<EOF
-set -e
-
+# Time & Localization
 ln -sf /usr/share/zoneinfo/$TIMEZONE /etc/localtime
 hwclock --systohc
-
-echo "$LOCALE UTF-8" >> /etc/locale.gen
-locale-gen
-
+echo "$LOCALE UTF-8" >> /etc/locale.gen && locale-gen
 echo "LANG=$LOCALE" > /etc/locale.conf
-
 echo "$H_NAME" > /etc/hostname
 
-echo "127.0.1.1        $H_NAME.localdomain        $H_NAME" >> /etc/hosts
-
-grub-install \
-    --target=x86_64-efi \
-    --efi-directory=/boot/efi \
-    --bootloader-id=ARTIX \
-    --recheck
-
-grub-mkconfig -o /boot/grub/grub.cfg
-
+# Password
 echo "root:$ROOTPASS" | chpasswd
 
+# Bootloader
+echo "GRUB_DISABLE_OS_PROBER=false" >> /etc/default/grub
+grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=ARTIX --recheck --removable
+grub-mkconfig -o /boot/grub/grub.cfg
+
+# Swap (RAMx2)
+echo "[*] Creating ${swap_size}MB swap file..."
+dd if=/dev/zero of=/swapfile bs=1M count=$swap_size status=progress
+chmod 600 /swapfile && mkswap /swapfile
+echo "/swapfile none swap defaults 0 0" >> /etc/fstab
+
+# DYNAMIC SERVICES
+echo "[*] Enabling services for $INIT..."
+for svc in dhcpcd iwd bluetooth $dm_service; do
+    [ -z "\$svc" ] && continue
+    if [[ "\$svc" == "bluetooth" && -z "$BT_PKGS" ]]; then continue; fi
+
+    case "$INIT" in
+        openrc) rc-update add \$svc default ;;
+        runit)  ln -s /etc/runit/sv/\$svc /etc/runit/runsvdir/default/ ;;
+        dinit)  mkdir -p /etc/dinit.d/boot.d && ln -s ../\$svc /etc/dinit.d/boot.d/ ;;
+        s6)     s6-rc-bundle-update add default \$svc ;;
+    esac
+done
+
+# Arch Repos
+if [[ "$ADD_ARCH_REPOS" == "yes" ]]; then
+    artix-config-n-install
+    pacman-key --populate archlinux
+fi
 EOF
-}
 
-#################
-# CLEANUP
-#################
+    # Save shell choice 
+    echo "$USER_SHELL" > /mnt/tmp/shell_choice
 
-cleanup() {
-    echo "[8] Cleaning up..."
-    umount -R /mnt || true
-}
+    # Post install scripts
+    hr
+    if [ -f "$SCRIPT_DIR/../firstboot.sh" ]; then
+        echo "[*] Copying post-install scripts from parent directory..."
+        install -Dm755 "$SCRIPT_DIR/../firstboot.sh" /mnt/usr/local/bin/firstboot.sh
+        install -Dm755 "$SCRIPT_DIR/../firstboot_trigger.sh" /mnt/etc/profile.d/firstboot.sh
+    elif [ -f "$SCRIPT_DIR/firstboot.sh" ]; then
+        echo "[*] Copying post-install scripts from current directory..."
+        install -Dm755 "$SCRIPT_DIR/firstboot.sh" /mnt/usr/local/bin/firstboot.sh
+        install -Dm755 "$SCRIPT_DIR/firstboot_trigger.sh" /mnt/etc/profile.d/firstboot.sh
+    else
+        echo "[WARNING] Post-install scripts not found! Skipping..."
+    fi
 
-#################
-# MAIN FLOW
-#################
-
-main() {
-    check_efi
-    ensure_tools
-
-    echo "=== ARTIX EFI INSTALLER ==="
-    echo "[!] This installer assumes:"
-    echo "    - partitions are already created"
-    echo "    - filesystems are already formatted"
-    echo "    - everything is already mounted under /mnt"
-    echo
-    pause
-
-    show_disks
-
-    read -rp "Is your system mounted correctly at /mnt? (y/n): " CONFIRM
-    [[ "$CONFIRM" == "y" ]] || exit 1
-
-    ask_passwords
-    detect_mounted
-
-    install_base
-    gen_fstab
-    configure_system
-    cleanup
-
-    echo
-    echo "[✓] INSTALL COMPLETE"
-    echo "You may reboot now."
+    umount -R /mnt
+    echo "[✓] MANUAL INSTALLATION COMPLETE! You can reboot."
 }
 
 main

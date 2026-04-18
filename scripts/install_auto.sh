@@ -1,386 +1,364 @@
 #!/bin/bash
 set -euo pipefail
 
-#################
-# CONFIG
-#################
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 LOCALE="en_US.UTF-8"
 TIMEZONE="Europe/Berlin"
 H_NAME="artix"
 
+# Editable VARs
 DISK=""
-WITH_HOME="n"
-
 EFI_SIZE="1024"
-
-ROOT_SIZE=""
-SWAP_SIZE=""
-HOME_SIZE=""
-
 EFI_PART=""
 ROOT_PART=""
-SWAP_PART=""
-HOME_PART=""
-
 ROOTPASS=""
-ROOTPASS_CONFIRM=""
+INIT=""
+X_SERVER=""
+DE_PKGS=""
+ADD_ARCH_REPOS="no"
+SWAP_CHOICE=""
 
-#################
-# UTILS
-#################
-
-pause() {
-    read -rp "Press ENTER to continue..."
-}
+# Fork options
+AUDIO_PKGS=""
+BT_PKGS=""
+USER_SHELL="/bin/bash"
+SHELL_PKGS=""
+ELOGIND_PKGS=""
 
 hr() {
-    echo "---------------------------------------"
+    echo "--------------------------------------------------------"
 }
 
-#################
-# CHECKS
-#################
+# Live USB INIT system
+detect_init() {
+    if [ -f /run/runit/runsvdir/current ]; then
+        INIT="runit"
+    elif [ -d /run/openrc ]; then
+        INIT="openrc"
+    elif [ -d /run/dinit ]; then
+        INIT="dinit"
+    elif [ -f /run/s6/services ]; then
+        INIT="s6"
+    else
+        echo "[ERROR] Could not detect init system."
+        exit 1
+    fi
+    echo "[*] Detected init system: $INIT"
+}
 
+# Is UEFI?
 check_efi() {
-    [[ -d /sys/firmware/efi ]] || {
-        echo "[ERROR] EFI mode required."
+    if [[ ! -d /sys/firmware/efi ]]; then
+        echo "[ERROR] EFI mode required (UEFI). Please reboot in UEFI mode."
         exit 1
-    }
+    fi
 }
 
+# Pacman setup + Util setup
 ensure_tools() {
-    echo "Installing required tools..."
-    pacman -Sy --noconfirm gptfdisk parted
-}
-
-ask_passwords() {
-    echo
-    echo "[!] Root password setup"
-    hr
-
-    read -rsp "Enter root password: " ROOTPASS
-    echo
-    read -rsp "Confirm root password: " ROOTPASS_CONFIRM
-    echo
-
-    [[ "$ROOTPASS" == "$ROOTPASS_CONFIRM" ]] || {
-        echo "[ERROR] Passwords do not match."
-        exit 1
-    }
-
-    if [[ -z "$ROOTPASS" ]]; then
-        echo "[ERROR] Empty password not allowed."
-        exit 1
-    fi
-}
-
-#################
-# DISK SELECTION
-#################
-
-select_disk() {
-    echo "[0] Available disks:"
-    hr
-    lsblk -dpno NAME,SIZE,MODEL | grep -E "/dev/(sd|vd|nvme)"
-    hr
-
-    read -rp "Enter target disk (e.g. /dev/vda): " DISK
-
-    if [[ ! -b "$DISK" ]]; then
-        echo "[ERROR] Invalid disk."
-        exit 1
+    echo "[*] Optimizing pacman and enabling Galaxy repo..."
+    
+    # Parallel downloads
+    sudo sed -i 's/#ParallelDownloads = 5/ParallelDownloads = 10/' /etc/pacman.conf
+    
+    # Galaxy repos
+    if ! grep -q "^\[galaxy\]" /etc/pacman.conf; then
+        echo -e "\n[galaxy]\nInclude = /etc/pacman.d/mirrorlist-galaxy" | sudo tee -a /etc/pacman.conf
     fi
 
-    echo "[✓] Selected disk: $DISK"
-}
-
-#################
-# CONFIRMATION
-#################
-
-confirm_wipe() {
-    echo
-    echo "[WARNING] ALL DATA ON $DISK WILL BE LOST!"
-    hr
-
-    read -rp "Use /home partition? (y/n): " WITH_HOME
-    [[ "$WITH_HOME" == "y" || "$WITH_HOME" == "n" ]] || exit 1
-
-    echo
-    read -rp "Type YES to continue: " ANS
-    [[ "$ANS" == "YES" ]] || exit 1
-}
-
-#################
-# SIZE INPUT
-#################
-
-ask_sizes() {
-    echo
-    echo "[1] Partition sizing (GB)"
-    hr
-
-    local disk_gb usable_gb
-    disk_gb=$(disk_size_gb)
-
-    local overhead=1
-    local efi=1
-
-    usable_gb=$((disk_gb - overhead - efi))
-
-    echo "[INFO] Disk size: ${disk_gb} GB"
-    echo "[INFO] EFI partition: ${efi} GB"
-    echo "[INFO] Reserved overhead: ${overhead} GB"
-    echo "[INFO] Usable space: ${usable_gb} GB"
-    echo
-
-    while true; do
-        read -rp "ROOT size (GB): " ROOT_SIZE
-        read -rp "SWAP size (GB): " SWAP_SIZE
-
-        if [[ "$WITH_HOME" == "y" ]]; then
-            read -rp "HOME size (GB or 'max'): " HOME_SIZE
-        fi
-
-        if validate_sizes; then
-            break
-        else
-            echo
-            echo "[!] Invalid sizes, please try again."
-            hr
+    # Tools / Utils
+    local pkgs=("gptfdisk" "dosfstools" "util-linux" "artix-install-scripts" "parted")
+    
+    sudo pacman -Sy --noconfirm
+    for pkg in "${pkgs[@]}"; do
+        if ! pacman -Qs "$pkg" > /dev/null; then
+            sudo pacman -S --noconfirm "$pkg"
         fi
     done
 }
 
-disk_size_gb() {
-    lsblk -bno SIZE "$DISK" | awk '{printf "%d", $1/1024/1024/1024}'
-}
-
-validate_sizes() {
-    local disk_gb usable_gb used
-
-    disk_gb=$(disk_size_gb)
-
-    local overhead=1
-    local efi=1
-
-    usable_gb=$((disk_gb - overhead - efi))
-
-    # numeric validation
-    [[ "$ROOT_SIZE" =~ ^[0-9]+$ ]] || {
-        echo "[ERROR] ROOT must be a number"
-        return 1
-    }
-    [[ "$SWAP_SIZE" =~ ^[0-9]+$ ]] || {
-        echo "[ERROR] SWAP must be a number"
-        return 1
-    }
-
-    used=$((ROOT_SIZE + SWAP_SIZE))
-
-    if [[ "$WITH_HOME" == "y" ]]; then
-        if [[ "$HOME_SIZE" != "max" ]]; then
-            [[ "$HOME_SIZE" =~ ^[0-9]+$ ]] || {
-                echo "[ERROR] HOME must be a number or 'max'"
-                return 1
-            }
-            used=$((used + HOME_SIZE))
-        fi
-    fi
-
-    if ((used > usable_gb)); then
-        echo "[ERROR] Not enough space."
-        echo "Used: $used GB / Usable: $usable_gb GB"
-        return 1
-    fi
-
-    return 0
-}
-#################
-# DISK PREP
-#################
-
-prepare_disk() {
-    echo "[2] Partitioning disk..."
+# X server + DE + Extras
+ask_options() {
     hr
+    read -rsp "Enter root password: " ROOTPASS; echo
+    
+    hr
+    echo "Choose X Server:"
+    echo "1) Xorg (Standard)"
+    echo "2) Xlibre (Modern fork)"
+    read -rp "Selection [1-2]: " xc
+    if [[ "$xc" == "2" ]]; then
+        X_SERVER="xlibre-xserver xlibre-xserver-common xlibre-input-libinput"
+    else
+        X_SERVER="xorg-server xorg-xinit xf86-input-libinput"
+    fi
 
+    hr
+    echo "Choose Desktop Environment:"
+    echo "1) XFCE"
+    echo "2) LXQt"
+    echo "3) LXDE"
+    echo "4) None"
+    read -rp "Selection [1-4]: " dc
+    case "$dc" in
+        1) DE_PKGS="xfce4 xfce4-goodies lightdm lightdm-$INIT lightdm-gtk-greeter" ;;
+        2) DE_PKGS="lxqt sddm sddm-$INIT" ;;
+        3) DE_PKGS="lxde sddm sddm-$INIT" ;;
+        *) DE_PKGS="" ;;
+    esac
+
+    hr
+    echo "--- Fork Extras ---"
+    echo "Choose Audio System:"
+    echo "1) Pipewire (Modern/Recommended)"
+    echo "2) PulseAudio (Classic)"
+    echo "3) None"
+    read -rp "Selection [1-3]: " ac
+    case "$ac" in
+        1) AUDIO_PKGS="pipewire pipewire-pulse wireplumber pipewire-$INIT" ;;
+        2) AUDIO_PKGS="pulseaudio pulseaudio-$INIT" ;;
+    esac
+
+    hr
+    read -rp "Install Bluetooth Support? (y/N): " bc
+    if [[ "$bc" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+        BT_PKGS="bluez bluez-$INIT"
+    fi
+
+    hr
+    echo "Choose Default Shell:"
+    echo "1) Bash (Standard)"
+    echo "2) Zsh (Advanced)"
+    read -rp "Selection [1-2]: " sc
+    if [[ "$sc" == "2" ]]; then
+        USER_SHELL="/bin/zsh"
+        SHELL_PKGS="zsh zsh-completions"
+    else
+        USER_SHELL="/bin/bash"
+    fi
+
+    hr
+    read -rp "Enable Elogind? (Highly recommended for DEs) (Y/n): " ec
+    if [[ "$ec" =~ ^([nN][oO]|[nN])$ ]]; then
+        ELOGIND_PKGS=""
+    else
+        ELOGIND_PKGS="elogind-$INIT"
+    fi
+
+    hr
+    echo "Choose Swap Type:"
+    echo "1) Swap File (RAM x 2)"
+    echo "2) Swap Partition (RAM x 2)"
+    echo "3) None"
+    read -rp "Selection [1-3]: " sc
+    SWAP_CHOICE=$sc
+
+    hr
+    read -rp "Enable Arch Linux Repositories? (y/N): " ar
+    if [[ "$ar" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+        ADD_ARCH_REPOS="yes"
+    fi
+}
+
+# Disk selection
+select_disk() {
+    hr
+    echo "Available Disks:"
+    lsblk -dpno NAME,SIZE,MODEL | grep -v loop
+    read -rp "Enter target disk (e.g. /dev/sda): " DISK
+    
+    if [[ ! -b "$DISK" ]]; then
+        echo "[ERROR] Invalid device: $DISK"
+        exit 1
+    fi
+}
+
+# EFI + Root
+prepare_disk() {
+    hr
+    echo "[*] Wiping and partitioning $DISK..."
+    umount -R /mnt 2>/dev/null || true
     wipefs -a "$DISK"
     sgdisk --zap-all "$DISK"
-
-    ROOT_MB=$((ROOT_SIZE * 1024))
-    SWAP_MB=$((SWAP_SIZE * 1024))
-
-    # EFI
+    
+    # 1: EFI (1GB)
     sgdisk -n 1:0:+${EFI_SIZE}M -t 1:ef00 "$DISK"
+    
+    local ram_m=$(free -m | awk '/^Mem:/{print $2}')
+    local s_size=$((ram_m * 2))
 
-    # ROOT
-    sgdisk -n 2:0:+${ROOT_MB}M -t 2:8300 "$DISK"
-
-    if [[ "$WITH_HOME" == "y" ]]; then
-        # HOME (directly after root)
-        if [[ "$HOME_SIZE" == "max" ]]; then
-            sgdisk -n 3:0:0 -t 3:8300 "$DISK"
+    # Define partition names
+    if [[ "$DISK" =~ "nvme" ]]; then
+        EFI_PART="${DISK}p1"
+        if [[ "$SWAP_CHOICE" == "2" ]]; then
+            ROOT_PART="${DISK}p3"
+            SWAP_PART="${DISK}p2"
         else
-            HOME_MB=$((HOME_SIZE * 1024))
-            sgdisk -n 3:0:+${HOME_MB}M -t 3:8300 "$DISK"
+            ROOT_PART="${DISK}p2"
         fi
-
-        # SWAP last
-        sgdisk -n 4:0:+${SWAP_MB}M -t 4:8200 "$DISK"
     else
-        # SWAP third
-        sgdisk -n 3:0:+${SWAP_MB}M -t 3:8200 "$DISK"
+        EFI_PART="${DISK}1"
+        if [[ "$SWAP_CHOICE" == "2" ]]; then
+            ROOT_PART="${DISK}3"
+            SWAP_PART="${DISK}2"
+        else
+            ROOT_PART="${DISK}2"
+        fi
     fi
 
-    partprobe "$DISK"
-    sleep 2
-
-    EFI_PART="${DISK}1"
-    ROOT_PART="${DISK}2"
-    SWAP_PART="${DISK}3"
-
-    if [[ "$WITH_HOME" == "y" ]]; then
-        HOME_PART="${DISK}3"
-        SWAP_PART="${DISK}4"
+    if [[ "$SWAP_CHOICE" == "2" ]]; then
+        echo "[*] Creating Swap Partition..."
+        sgdisk -n 2:0:+${s_size}M -t 2:8200 "$DISK"
+        sgdisk -n 3:0:0           -t 3:8300 "$DISK"
+        mkswap "$SWAP_PART"
+        swapon "$SWAP_PART"
+    else
+        echo "[*] Creating Root Partition..."
+        sgdisk -n 2:0:0 -t 2:8300 "$DISK"
     fi
-}
 
-#################
-# FORMAT
-#################
-
-format_partitions() {
-    echo "[3] Formatting..."
-    hr
-
+    echo "[*] Formatting partitions..."
     mkfs.fat -F32 "$EFI_PART"
-    mkfs.ext4 "$ROOT_PART"
-    mkswap "$SWAP_PART"
-
-    if [[ "$WITH_HOME" == "y" ]]; then
-        mkfs.ext4 "$HOME_PART"
-    fi
-}
-
-#################
-# MOUNT
-#################
-
-mount_system() {
-    echo "[4] Mounting..."
-    hr
-
+    mkfs.ext4 -F "$ROOT_PART"
+    
+    echo "[*] Mounting partitions..."
     mount "$ROOT_PART" /mnt
     mount --mkdir "$EFI_PART" /mnt/boot/efi
-    swapon "$SWAP_PART"
+}
 
-    if [[ "$WITH_HOME" == "y" ]]; then
-        mount --mkdir "$HOME_PART" /mnt/home
+# Base installation
+install_base() {
+    hr
+    local ucode=""
+    if grep -q "GenuineIntel" /proc/cpuinfo; then ucode="intel-ucode"; else ucode="amd-ucode"; fi
+    
+    local gpu_driver=""
+    if lspci | grep -qi "vga\|display"; then
+        if lspci | grep -qi "nvidia"; then
+            gpu_driver="nvidia-dkms nvidia-utils"
+        elif lspci | grep -qi "intel"; then
+            [[ "$X_SERVER" == *"xlibre"* ]] && gpu_driver="xlibre-video-intel" || gpu_driver="xf86-video-intel"
+        elif lspci | grep -qi "amd\|ati"; then
+            [[ "$X_SERVER" == *"xlibre"* ]] && gpu_driver="xlibre-video-amdgpu" || gpu_driver="xf86-video-amdgpu"
+        fi
+    fi
+
+    local vm_tools=""
+    local virt_type=$(systemd-detect-virt || echo "none")
+    if [[ "$virt_type" == "oracle" ]]; then 
+        vm_tools="virtualbox-guest-utils-$INIT"
+    elif [[ "$virt_type" == "vmware" ]]; then
+        vm_tools="open-vm-tools-$INIT"
+    fi
+
+    local extra_pkgs=""
+    if [[ "$ADD_ARCH_REPOS" == "yes" ]]; then extra_pkgs="artix-archlinux-support"; fi
+
+    echo "[*] Running basestrap with all selected components..."
+    basestrap /mnt base base-devel linux linux-firmware $ucode \
+        $INIT $ELOGIND_PKGS grub efibootmgr os-prober \
+        dhcpcd dhcpcd-$INIT iwd iwd-$INIT nano \
+        $X_SERVER $gpu_driver $DE_PKGS $AUDIO_PKGS $BT_PKGS $SHELL_PKGS $vm_tools $extra_pkgs
+}
+
+# Chroot config
+configure_system() {
+    hr
+    echo "[*] Generating fstab..."
+    fstabgen -U /mnt >> /mnt/etc/fstab
+    
+    local ram_m=$(free -m | awk '/^Mem:/{print $2}')
+    local s_size=$((ram_m * 2))
+    
+    local dm_service=""
+    [[ "$DE_PKGS" =~ "lightdm" ]] && dm_service="lightdm"
+    [[ "$DE_PKGS" =~ "sddm" ]] && dm_service="sddm"
+
+    echo "[*] Configuring system in chroot..."
+    artix-chroot /mnt /bin/bash <<EOF
+# Time & Localization
+ln -sf /usr/share/zoneinfo/$TIMEZONE /etc/localtime
+hwclock --systohc
+echo "$LOCALE UTF-8" >> /etc/locale.gen && locale-gen
+echo "LANG=$LOCALE" > /etc/locale.conf
+echo "$H_NAME" > /etc/hostname
+
+# Password
+echo "root:$ROOTPASS" | chpasswd
+
+# Bootloader
+echo "GRUB_DISABLE_OS_PROBER=false" >> /etc/default/grub
+grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=ARTIX --recheck --removable
+grub-mkconfig -o /boot/grub/grub.cfg
+
+# Swap File
+if [[ "$SWAP_CHOICE" == "1" ]]; then
+    echo "[*] Creating ${s_size}MB swap file..."
+    dd if=/dev/zero of=/swapfile bs=1M count=$s_size status=progress
+    chmod 600 /swapfile && mkswap /swapfile
+    echo "/swapfile none swap defaults 0 0" >> /etc/fstab
+fi
+
+# DYNAMIC SERVICES
+echo "[*] Enabling services for $INIT..."
+for svc in dhcpcd iwd bluetooth $dm_service; do
+    [ -z "\$svc" ] && continue
+    if [[ "\$svc" == "bluetooth" && -z "$BT_PKGS" ]]; then continue; fi
+
+    case "$INIT" in
+        openrc) rc-update add \$svc default ;;
+        runit)  ln -s /etc/runit/sv/\$svc /etc/runit/runsvdir/default/ ;;
+        dinit)  mkdir -p /etc/dinit.d/boot.d && ln -s ../\$svc /etc/dinit.d/boot.d/ ;;
+        s6)     s6-rc-bundle-update add default \$svc ;;
+    esac
+done
+
+# Arch Repos
+if [[ "$ADD_ARCH_REPOS" == "yes" ]]; then
+    artix-config-n-install
+    pacman-key --populate archlinux
+fi
+EOF
+
+    # Save shell choice 
+    echo "$USER_SHELL" > /mnt/tmp/shell_choice
+
+    # Post install scripts
+    hr
+    if [ -f "$SCRIPT_DIR/../firstboot.sh" ]; then
+        echo "[*] Copying post-install scripts from parent directory..."
+        install -Dm755 "$SCRIPT_DIR/../firstboot.sh" /mnt/usr/local/bin/firstboot.sh
+        install -Dm755 "$SCRIPT_DIR/../firstboot_trigger.sh" /mnt/etc/profile.d/firstboot.sh
+    elif [ -f "$SCRIPT_DIR/firstboot.sh" ]; then
+        echo "[*] Copying post-install scripts from current directory..."
+        install -Dm755 "$SCRIPT_DIR/firstboot.sh" /mnt/usr/local/bin/firstboot.sh
+        install -Dm755 "$SCRIPT_DIR/firstboot_trigger.sh" /mnt/etc/profile.d/firstboot.sh
+    else
+        echo "[WARNING] Post-install scripts not found! Skipping..."
     fi
 }
 
-#################
-# BASE INSTALL
-#################
-
-install_base() {
-    echo "[5] Installing base system..."
-    hr
-
-    basestrap /mnt \
-        base base-devel linux linux-firmware \
-        runit elogind-runit \
-        grub efibootmgr \
-        fastfetch nano \
-        dhcpcd dhcpcd-runit \
-        iwd iwd-runit
-}
-
-gen_fstab() {
-    echo "[6] Generating filesystem table..."
-    fstabgen -U /mnt >>/mnt/etc/fstab
-}
-
-#################
-# CHROOT CONFIG
-#################
-
-configure_system() {
-    echo "[7] System config (chroot)..."
-    hr
-
-    read -rp "Timezone (e.g. Europe/Berlin [default]): " TIMEZONE
-
-    artix-chroot /mnt /bin/bash <<EOF
-set -e
-
-ln -sf /usr/share/zoneinfo/$TIMEZONE /etc/localtime
-hwclock --systohc
-
-echo "$LOCALE UTF-8" >> /etc/locale.gen
-locale-gen
-
-echo "LANG=$LOCALE" > /etc/locale.conf
-
-echo "$H_NAME" > /etc/hostname
-
-echo "127.0.1.1        $H_NAME.localdomain        $H_NAME" >> /etc/hosts
-
-grub-install \
-    --target=x86_64-efi \
-    --efi-directory=/boot/efi \
-    --bootloader-id=ARTIX \
-    --recheck
-
-grub-mkconfig -o /boot/grub/grub.cfg
-
-echo "root:$ROOTPASS" | chpasswd
-
-EOF
-}
-
-#################
-# CLEANUP
-#################
-
-cleanup() {
-    echo "[8] Cleaning up..."
-    umount -R /mnt || true
-}
-
-#################
-# MAIN FLOW
-#################
-
 main() {
+    clear
+    hr
+    echo "============================================="
+    echo "      ARTIX LINUX INSTALLER (AUTO MODE)      "
+    echo "============================================="
+    hr
+    
     check_efi
+    detect_init
     ensure_tools
-
-    echo "=== ARTIX EFI INSTALLER ==="
-    echo "[!] This installer assumes a completely unpartitioned disk."
-    echo "[!] Manual partitioning is NOT supported."
-    echo "[!] All data on the selected disk will be wiped."
-    pause
-
-    ask_passwords
-
+    ask_options
     select_disk
-    confirm_wipe
-    ask_sizes
-    validate_sizes
-
     prepare_disk
-    format_partitions
-    mount_system
     install_base
-    gen_fstab
     configure_system
-    cleanup
-
-    echo
-    echo "[✓] INSTALL COMPLETE"
-    echo "You may reboot now."
+    
+    umount -R /mnt
+    hr
+    echo "[✓] AUTO INSTALLATION COMPLETE! You can reboot."
 }
 
 main
