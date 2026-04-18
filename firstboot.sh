@@ -8,10 +8,9 @@ INIT="openrc"
 setup_networking() {
     echo "--- Networking ---"
     if ping -c 1 8.8.8.8 &>/dev/null; then
-        echo "[✓] Internet connection is active."
+        echo "[✓] Online."
         return 0
     fi
-
     case "$INIT" in
         openrc) rc-service iwd start 2>/dev/null || true ;;
         dinit)  dinitctl start iwd 2>/dev/null || true ;;
@@ -22,12 +21,11 @@ setup_networking() {
 
 create_user() {
     echo "--- User Setup ---"
-    read -rp "Username (leave empty to skip): " un
+    read -rp "Username: " un
     [[ -z "$un" ]] && return 0
-
     if id "$un" &>/dev/null; then
-        echo "[!] User '$un' already exists."
-        read -rp "Reset password for this user? (y/N): " res_pass
+        echo "[!] User '$un' exists."
+        read -rp "Reset password? (y/N): " res_pass
         [[ "$res_pass" =~ ^([yY])$ ]] && passwd "$un"
     else
         read -rp "Shell: 1) Bash 2) Zsh: " shc
@@ -36,7 +34,6 @@ create_user() {
         useradd -m -G wheel,audio,video,storage,input -s "$ush" "$un"
         passwd "$un"
     fi
-
     pacman -S --noconfirm sudo
     sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers 2>/dev/null || \
     sed -i 's/^# %wheel ALL=(ALL) ALL/%wheel ALL=(ALL) ALL/' /etc/sudoers
@@ -45,11 +42,9 @@ create_user() {
 setup_audio() {
     echo "--- Audio Setup ---"
     if pacman -Qs pipewire >/dev/null || pacman -Qs pulseaudio >/dev/null; then
-        echo "[✓] Audio packages already detected."
-        read -rp "Reinstall/Change audio? (y/N): " ra
+        read -rp "Audio detected. Reinstall? (y/N): " ra
         [[ ! "$ra" =~ ^([yY])$ ]] && return 0
     fi
-
     echo "1) Pipewire 2) PulseAudio 3) None"
     read -rp "Audio: " ac
     case "$ac" in
@@ -61,33 +56,27 @@ setup_audio() {
 setup_desktop() {
     echo "--- Desktop Environment ---"
     if pacman -Qs lightdm >/dev/null || pacman -Qs sddm >/dev/null; then
-        echo "[✓] A Display Manager appears to be installed."
-        read -rp "Install/Change Desktop anyway? (y/N): " rd
+        read -rp "GUI detected. Reinstall? (y/N): " rd
         [[ ! "$rd" =~ ^([yY])$ ]] && return 0
     fi
-
     echo "1) XFCE4 2) LXQt 3) LXDE 4) None"
     read -rp "DE: " dc
     local pkgs=""
     local dm=""
     local common="network-manager-applet gvfs gvfs-mtp"
-
     case "$dc" in
         1) pkgs="xfce4 xfce4-goodies $common"; dm="lightdm" ;;
         2) pkgs="lxqt pavucontrol-qt $common"; dm="lightdm" ;;
         3) pkgs="lxde lxappearance $common"; dm="lightdm" ;;
         *) return 0 ;;
     esac
-
     if [[ "$dc" =~ ^(2|3)$ ]]; then
         echo "WARNING: SDDM is RedHat-code reliant. LightDM is agnostic."
         read -rp "1) LightDM 2) SDDM: " dmc
         [[ "$dmc" == "2" ]] && dm="sddm"
     fi
-
     pacman -S --noconfirm $pkgs $dm $dm-$INIT
     [[ "$dm" == "lightdm" ]] && pacman -S --noconfirm lightdm-gtk-greeter
-
     case "$INIT" in
         openrc) rc-update add $dm default 2>/dev/null || true ;;
         runit)  ln -s /etc/runit/sv/$dm /etc/runit/runsvdir/default/ 2>/dev/null || true ;;
@@ -98,26 +87,23 @@ setup_desktop() {
 
 install_drivers() {
     echo "--- Hardware Drivers ---"
-    read -rp "Install detected hardware drivers (GPU/VM)? (y/N): " drv_ans
+    read -rp "Install detected hardware drivers? (y/N): " drv_ans
     [[ ! "$drv_ans" =~ ^([yY])$ ]] && return 0
-
     local pkgs=""
     if lspci | grep -qi "nvidia"; then pkgs="nvidia-dkms nvidia-utils"
     elif lspci | grep -qi "intel"; then pkgs="xf86-video-intel"
     elif lspci | grep -qi "amd"; then pkgs="xf86-video-amdgpu"; fi
-    
     local virt=$(systemd-detect-virt || echo "none")
     [[ "$virt" == "oracle" ]] && pkgs="$pkgs virtualbox-guest-utils-$INIT"
     [[ -n "$pkgs" ]] && pacman -S --noconfirm $pkgs
 }
 
 enable_arch_repos() {
-    echo "--- Arch Linux Repositories ---"
+    echo "--- Arch Repositories ---"
     if grep -q "^\[extra\]" /etc/pacman.conf; then
-        echo "[✓] Arch repositories are already configured."
+        echo "[✓] Already configured."
         return 0
     fi
-
     read -rp "Enable Arch Repos? (y/N): " ar
     if [[ "$ar" =~ ^([yY])$ ]]; then
         pacman -Sy --noconfirm artix-archlinux-support
@@ -134,13 +120,27 @@ enable_arch_repos() {
 
 install_bonus_tools() {
     echo "--- Bonus Tools ---"
-    read -rp "Install Extras (Git, Codecs, BT, UFW, rsvc)? (y/N): " bt
-    [[ ! "$bt" =~ ^([yY])$ ]] && return 0
+    read -rp "Enter Extras Menu? (y/N): " bt_menu
+    [[ ! "$bt_menu" =~ ^([yY])$ ]] && return 0
 
-    pacman -S --noconfirm git base-devel gst-plugins-good gst-libav ufw ufw-$INIT
-    
-    read -rp "Enable Bluetooth? (y/N): " btc
-    if [[ "$btc" =~ ^([yY])$ ]]; then
+    read -rp "Install Git & Base-Devel? (y/N): " i_git
+    [[ "$i_git" =~ ^([yY])$ ]] && pacman -S --noconfirm git base-devel
+
+    read -rp "Install Codecs? (y/N): " i_cod
+    [[ "$i_cod" =~ ^([yY])$ ]] && pacman -S --noconfirm gst-plugins-good gst-libav
+
+    read -rp "Install UFW Firewall? (y/N): " i_ufw
+    if [[ "$i_ufw" =~ ^([yY])$ ]]; then
+        pacman -S --noconfirm ufw ufw-$INIT
+        case "$INIT" in
+            openrc) rc-update add ufw default 2>/dev/null || true ;;
+            runit)  ln -s /etc/runit/sv/ufw /etc/runit/runsvdir/default/ 2>/dev/null || true ;;
+            dinit)  ln -s ../ufw /etc/dinit.d/boot.d/ 2>/dev/null || true ;;
+        esac
+    fi
+
+    read -rp "Install Bluetooth? (y/N): " i_bt
+    if [[ "$i_bt" =~ ^([yY])$ ]]; then
         pacman -S --noconfirm bluez bluez-$INIT
         case "$INIT" in
             openrc) rc-update add bluetooth default 2>/dev/null || true ;;
@@ -149,23 +149,36 @@ install_bonus_tools() {
         esac
     fi
 
-    read -rp "Install Flatpak? (y/N): " fc
-    [[ "$fc" =~ ^([yY])$ ]] && pacman -S --noconfirm flatpak
+    read -rp "Install Flatpak? (y/N): " i_fp
+    [[ "$i_fp" =~ ^([yY])$ ]] && pacman -S --noconfirm flatpak
 
-    read -rp "Install Zram? (y/N): " zc
-    [[ "$zc" =~ ^([yY])$ ]] && { pacman -S --noconfirm zramen-$INIT 2>/dev/null || pacman -S --noconfirm zram-tools 2>/dev/null || true; }
-
+    read -rp "Install Zram? (y/N): " i_zr
+    [[ "$i_zr" =~ ^([yY])$ ]] && { pacman -S --noconfirm zramen-$INIT 2>/dev/null || pacman -S --noconfirm zram-tools 2>/dev/null || true; }
+    
     if [[ "$INIT" == "runit" ]]; then
-        read -rp "Install Sashex's rsvc? (y/N): " rc
-        [[ "$rc" =~ ^([yY])$ ]] && pacman -S --noconfirm rsvc
+        read -rp "Install SashexSRB's rsvc? (WARNING: Pulls git & base-devel!) (https://github.com/SashexSRB/rsvc) (y/N): " i_rv
+        if [[ "$i_rv" =~ ^([yY])$ ]]; then
+            echo "--- Building rsvc ---"
+            pacman -S --noconfirm git base-devel && \
+            git clone https://github.com/SashexSRB/rsvc /tmp/rsvc && {
+                cd /tmp/rsvc || return 1
+                make
+                make install
+                cd - >/dev/null || return 1
+                rm -rf /tmp/rsvc
+                echo "[✓] SashexSRB's rsvc installed."
+            } || echo "[!] Failed to build rsvc."
+        fi
     fi
+
+    read -rp "Install fastfetch? (y/N): " i_ff
+      [[ "$i_ff" =~ ^([yY])$ ]] && pacman -S --noconfirm fastfetch
 }
 
 main() {
     echo "======================================="
     echo "   ARTIX POST-INSTALL SCRIPT           "
     echo "======================================="
-
     setup_networking
     create_user
     setup_audio
@@ -173,15 +186,17 @@ main() {
     install_drivers
     enable_arch_repos
     install_bonus_tools
-
     echo "--- Finalize ---"
-    read -rp "All done? Remove wizard from startup? (y/N): " final
+    read -rp "All done. Remove wizard from startup? (y/N): " final
     if [[ "$final" =~ ^([yY])$ ]]; then
         touch /var/lib/artix-firstboot-done
         rm -f /etc/profile.d/firstboot.sh
         echo "[✓] Cleanup complete. Enjoy your system!"
+        echo "To apply everything, you should reboot (Script is located at /usr/local/bin/firstboot.sh)."
     else
         echo "[!] Wizard kept. You can run it again by logging in as root."
+        echo "Files are located on /etc/profile.d/firstboot.sh and /usr/local/bin/firstboot.sh!"
+        echo "To apply everything, you should reboot."
     fi
 }
 
