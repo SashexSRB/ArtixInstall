@@ -72,8 +72,14 @@ setup_audio() {
     echo "1) Pipewire 2) PulseAudio 3) None"
     read -rp "Audio: " ac
     case "$ac" in
-        1) pacman -S --noconfirm pipewire pipewire-pulse wireplumber pipewire-$INIT ;;
-        2) pacman -S --noconfirm pulseaudio pulseaudio-$INIT ;;
+        1) 
+            pacman -S --noconfirm pipewire pipewire-pulse wireplumber
+            pacman -S --noconfirm pipewire-$INIT 2>/dev/null || true 
+            ;;
+        2) 
+            pacman -S --noconfirm pulseaudio pulseaudio-alsa
+            pacman -S --noconfirm pulseaudio-$INIT 2>/dev/null || true 
+            ;;
     esac
 }
 
