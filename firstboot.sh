@@ -27,17 +27,22 @@ enable_arch_repos() {
         echo "[✓] Already configured."
         return 0
     fi
-    pacman -Sy --noconfirm artix-archlinux-support
-    hash -r
-    if command -v artix-config-n-install &>/dev/null; then
-        artix-config-n-install
-    else
-        /usr/bin/artix-config-n-install
-    fi
-    pacman-key --populate archlinux
-    pacman -Sy
-}
 
+    read -rp "Enable Arch Repos? (Required for LXQt/LXDE/Drivers) (y/N): " ar
+    if [[ "$ar" =~ ^([yY])$ ]]; then
+        pacman -Sy --noconfirm artix-archlinux-support
+        hash -r
+        if command -v artix-config-n-install &>/dev/null; then
+            artix-config-n-install
+        else
+            /usr/bin/artix-config-n-install
+        fi
+        pacman-key --populate archlinux
+        pacman -Sy
+    else
+        echo "[!] Skipping Arch repos. Some DEs or drivers might fail to install."
+    fi
+}
 create_user() {
     echo "--- User Setup ---"
     read -rp "Username: " un
