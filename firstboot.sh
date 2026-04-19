@@ -29,12 +29,10 @@ enable_arch_repos() {
     if [[ "$ar" =~ ^([yY])$ ]]; then
         pacman -Sy --noconfirm artix-archlinux-support
         hash -r
-        if command -v artix-config-n-install &>/dev/null; then
-            artix-config-n-install
-            pacman-key --populate archlinux
-            pacman -Sy
-        else
+        if [[ -f /usr/bin/artix-config-n-install ]]; then
             /usr/bin/artix-config-n-install && pacman-key --populate archlinux && pacman -Sy
+        else
+            /usr/bin/artix-config-n-install 2>/dev/null && pacman-key --populate archlinux && pacman -Sy
         fi
     else
         echo "[!] Skipping Arch repos. Some DEs or drivers might fail to install."
