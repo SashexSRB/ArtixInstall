@@ -1,79 +1,70 @@
 #!/usr/bin/env bash
-set -euo pipefail;
+set -euo pipefail
 
-SELF_PATH="$(realpath "${BASH_SOURCE[0]}")";
-SCRIPT_DIR="${SELF_PATH%/*}";
+SELF_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="${SELF_PATH%/*}"
 
-MODE="";
-ARGV=();
+MODE=""
+ARGV=()
 
 function _error_exit {
-    local reason="${1}";
-    printf "%b%s%b\n" "\e[1;31m" "${reason^}" "\e[m" >&2;
-    exit 1;
+    local reason="${1}"
+    printf "%b%s%b\n" "\e[1;31m" "${reason^}" "\e[m" >&2
+    exit 1
 }
 
 function _parse_docblock {
-    local esc;
-    printf -v esc "\033";
-    local help="${1}";
-    help="$(sed -E "s/^[[:space:]]*#\|[[:space:]]?//g" <<< "${help}")";
-    help="$(sed -E "s/\{e:([0-9a-zA-Z;]+)\}/${esc}[\1/g" <<< "${help}")";
-    printf "%s\n" "${help}";
+    local esc; printf -v esc "\033"
+    local help="${1}"
+    help="$(sed -E "s/^[[:space:]]*#\|[[:space:]]?//g" <<< "${help}")"
+    help="$(sed -E "s/\{e:([0-9a-zA-Z;]+)\}/${esc}[\1/g" <<< "${help}")"
+    printf "%s\n" "${help}"
 }
 
 function _extract_docblock {
-    local function_name="${1}";
-    local line docblock="";
-    local -a buffer=();
+    local function_name="${1}"
+    local line docblock=""
+    local -a buffer=()
 
     while IFS= read -r line || [[ -n "${line}" ]]; do
         if [[ "${line}" =~ ^[[:space:]]*#\| ]]; then
-            buffer+=( "${line}" );
-            continue;
+            buffer+=( "${line}" )
+            continue
         fi
-        
-        if [[ "${line}" =~ ^[[:space:]]*(function[[:space:]]+)?${function_name}([[:space:]]*\(\))?[[:space:]]*\{? ]]; then
+        if [[ "${line}" =~ "function ${function_name}" ]] || [[ "${line}" =~ "${function_name}()" ]]; then
             if [[ ${#buffer[@]} -gt 0 ]]; then
-                printf -v docblock "%s\n" "${buffer[@]}";
-                break;
+                printf -v docblock "%s\n" "${buffer[@]}"
+                break
             fi
         fi
-        buffer=();
-    done < "${SELF_PATH}";
+        buffer=()
+    done < "${SELF_PATH}"
 
-    [[ -z "${docblock}" ]] && _error_exit "no documentation present for function ${function_name}";
-    _parse_docblock "${docblock}";
-}
-
-function _check_root {
-    [[ "${EUID}" -ne 0 ]] && _error_exit "this script must be run as root (sudo)";
+    [[ -z "${docblock}" ]] && _error_exit "Documentation not found for ${function_name}"
+    _parse_docblock "${docblock}"
 }
 
 function _parse_flags {
-    [[ $# -eq 0 ]] && _extract_docblock "main" && exit 0;
+    [[ $# -eq 0 ]] && _extract_docblock "main" && exit 0
 
     while [[ $# -gt 0 ]]; do
         case "${1}" in
             -a|--auto)   MODE="auto"; shift ;;
             -m|--manual) MODE="manual"; shift ;;
             -h|--help)   _extract_docblock "main"; exit 0 ;;
-            *) ARGV+=("${1}"); shift ;;
+            *)           ARGV+=("${1}"); shift ;;
         esac
     done
 }
 
 function _dispatch {
-    local target_script="";
-    case "${MODE}" in
-        auto)   target_script="${SCRIPT_DIR}/scripts/install_auto.sh" ;;
-        manual) target_script="${SCRIPT_DIR}/scripts/install_manual.sh" ;;
-        *)      _error_exit "no mode selected. Use -a or -m." ;;
-    esac
-
-    [[ ! -f "${target_script}" ]] && _error_exit "${MODE} script missing";
-    chmod +x "${target_script}";
-    exec "${target_script}";
+    [[ -z "${MODE}" ]] && _error_exit "No mode selected. Use -a or -m."
+    
+    local target="${SCRIPT_DIR}/scripts/install_${MODE}.sh"
+    [[ ! -f "${target}" ]] && _error_exit "Script not found: ${target}"
+    
+    chmod +x "${target}"
+    exec "${target}" "${ARGV[@]}"
 }
 
 #| {e:1;32m}Usage:{e:m} ./install [options]
@@ -83,9 +74,9 @@ function _dispatch {
 #|   -m, --manual    Run manual Artix installation
 #|   -h, --help      Show this help message
 function main {
-    _check_root;
-    _parse_flags "${@}";
-    _dispatch;
+    [[ "${EUID}" -ne 0 ]] && _error_exit "Must be run as root (sudo)"
+    _parse_flags "$@"
+    _dispatch
 }
 
-main "${@}";
+main "$@"
