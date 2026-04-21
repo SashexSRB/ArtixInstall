@@ -54,12 +54,17 @@ function _choose_bootloader {
         printf "[!] LUKS enabled: Forcing GRUB (rEFInd does not support encrypted /boot)\n"
         BOOTLOADER="grub"
     else
-        printf "1) GRUB (Standard)  2) rEFInd (Graphical/Auto-detect)\n"
-        printf "Bootloader: "
-        read -r bc
-        [[ "${bc}" == "2" ]] && BOOTLOADER="refind" || BOOTLOADER="grub"
+        printf "1) GRUB (Standard)  2) rEFInd (Graphical)\n"
+        printf "Bootloader: "; read -r bc </dev/tty
+        if [[ "${bc}" == "2" ]]; then
+            BOOTLOADER="refind"
+        else
+            BOOTLOADER="grub"
+        fi
+        printf "[*] Selected bootloader: %s\n" "${BOOTLOADER^^}"
     fi
 }
+
 
 function _ask_info {
     printf "Root password: "; read -rs ROOTPASS; echo;
@@ -164,7 +169,7 @@ function main {
     _ensure_tools;
     _choose_fs;
     _choose_init;
-    _setup_encryption; 
+    _setup_encryption;
     _choose_bootloader;
     _ask_info;
     _partition_storage;
