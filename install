@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail;
 
-SELF_PATH="${BASH_SOURCE[0]}";
-[[ "${SELF_PATH}" != /* ]] && SELF_PATH="${PWD}/${SELF_PATH}";
+SELF_PATH="$(realpath "${BASH_SOURCE[0]}")";
 SCRIPT_DIR="${SELF_PATH%/*}";
 
 MODE="";
@@ -15,7 +14,8 @@ function _error_exit {
 }
 
 function _parse_docblock {
-    local esc; printf -v esc "\033";
+    local esc;
+    printf -v esc "\033";
     local help="${1}";
     help="$(sed -E "s/^[[:space:]]*#\|[[:space:]]?//g" <<< "${help}")";
     help="$(sed -E "s/\{e:([0-9a-zA-Z;]+)\}/${esc}[\1/g" <<< "${help}")";
@@ -27,20 +27,22 @@ function _extract_docblock {
     local line docblock="";
     local -a buffer=();
 
-    while IFS= read -r line; do
+    while IFS= read -r line || [[ -n "${line}" ]]; do
         if [[ "${line}" =~ ^[[:space:]]*#\| ]]; then
             buffer+=( "${line}" );
             continue;
         fi
-
-        if [[ "${line}" =~ "function ${function_name}" ]]; then
-            [[ ${#buffer[@]} -gt 0 ]] && printf -v docblock "%s\n" "${buffer[@]}";
-            break;
+        
+        if [[ "${line}" =~ ^[[:space:]]*(function[[:space:]]+)?${function_name}([[:space:]]*\(\))?[[:space:]]*\{? ]]; then
+            if [[ ${#buffer[@]} -gt 0 ]]; then
+                printf -v docblock "%s\n" "${buffer[@]}";
+                break;
+            fi
         fi
         buffer=();
     done < "${SELF_PATH}";
 
-    [[ -z "${docblock}" ]] && _error_exit "no documentation present for function";
+    [[ -z "${docblock}" ]] && _error_exit "no documentation present for function ${function_name}";
     _parse_docblock "${docblock}";
 }
 
@@ -49,29 +51,15 @@ function _check_root {
 }
 
 function _parse_flags {
-    local ptr=1;
-    while [[ ${ptr} -le ${#} ]]; do
-        local param="${!ptr}";
-        if [[ "${param}" != "-"* ]]; then
-            ARGV+=( "${param}" );
-            ((ptr++));
-        else
-            case "${param}" in
-                -a|--auto)   MODE="auto" ;;
-                -m|--manual) MODE="manual" ;;
-                -h|--help) 
-                    _extract_docblock "main";
-                    exit 0;
-                    ;;
-                *) _error_exit "unknown option: ${param}" ;;
-            esac
-            
-            if [[ ${ptr} -eq 1 ]]; then 
-                set -- "${@:2}";
-            else 
-                set -- "${@:1:$((ptr - 1))}" "${@:$((ptr + 1))}";
-            fi
-        fi
+    [[ $# -eq 0 ]] && _extract_docblock "main" && exit 0;
+
+    while [[ $# -gt 0 ]]; do
+        case "${1}" in
+            -a|--auto)   MODE="auto"; shift ;;
+            -m|--manual) MODE="manual"; shift ;;
+            -h|--help)   _extract_docblock "main"; exit 0 ;;
+            *) ARGV+=("${1}"); shift ;;
+        esac
     done
 }
 
@@ -84,7 +72,6 @@ function _dispatch {
     esac
 
     [[ ! -f "${target_script}" ]] && _error_exit "${MODE} script missing";
-    
     chmod +x "${target_script}";
     exec "${target_script}";
 }
