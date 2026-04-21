@@ -27,7 +27,7 @@ function _ask {
 }
 
 function _setup_networking {
-    printf "--- Networking ---\n";
+    printf "   Networking   \n";
     if ping -c 1 8.8.8.8 &>/dev/null; then
         printf "[✓] Online.\n";
     else
@@ -41,7 +41,7 @@ function _setup_networking {
 }
 
 function _enable_arch_repos {
-    printf "--- Arch Repositories ---\n";
+    printf "   Arch Repositories  \n";
     if grep -q "^\[extra\]" /etc/pacman.conf; then
         printf "[✓] Already configured.\n";
     elif _ask "Enable Arch Repos?" "n"; then
@@ -56,7 +56,7 @@ function _enable_arch_repos {
 }
 
 function _create_user {
-    printf "--- User Setup ---\n";
+    printf "  User Setup  \n";
     local un;
     printf "Username: "; read -r un;
     [[ -z "${un}" ]] && return 0;
@@ -75,7 +75,7 @@ function _create_user {
 }
 
 function _install_drivers {
-    printf "--- Hardware Drivers ---\n";
+    printf "  Hardware Drivers  \n";
     if _ask "Install hardware drivers?" "y"; then
         printf "1) Standard X.Org 2) xLibre\nChoice: "; 
         local drv_pref;
@@ -102,7 +102,7 @@ function _install_drivers {
 }
 
 function _setup_audio {
-    printf "--- Audio Setup ---\n";
+    printf "  Audio Setup  \n";
     if pgrep -x "pipewire|pulseaudio" >/dev/null; then
         _ask "Audio server detected. Reconfigure?" "n" || return 0;
     fi
@@ -119,7 +119,7 @@ function _setup_audio {
 }
 
 function _setup_desktop {
-    printf "--- Desktop Environment ---\n";
+    printf "  Desktop Environment  \n";
     
     if ! _ask "Install a Desktop Environment?" "n"; then
         printf "[!] Skipping Desktop Environment. System will remain CLI only.\n";
@@ -162,7 +162,7 @@ function _setup_desktop {
 }
 
 function _install_bonus_tools {
-    printf "--- Bonus Tools ---\n";
+    printf "  Bonus Tools  \n";
     if _ask "Enter Extras Menu?" "n"; then
         _ask "Install Git & Base-Devel?" "y" && pacman -S --noconfirm git base-devel;
         _ask "Install Codecs?" "n" && pacman -S --noconfirm gst-plugins-good gst-libav;
