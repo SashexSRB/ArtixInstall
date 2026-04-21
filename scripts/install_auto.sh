@@ -82,7 +82,6 @@ function _ask_info {
     _ask "External/removable drive?" "n" && REMOVABLE_FLAG="--removable";
 }
 
-
 function _partition_storage {
     printf "[*] Partitioning storage (%s)...\n" "${FS_TYPE^^}";
     wipefs -a "${DISK}";
