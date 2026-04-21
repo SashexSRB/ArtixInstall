@@ -192,6 +192,9 @@ function _install_bonus_tools {
 }
 
 function main {
+    [[ "${EUID}" -ne 0 ]] && _error_exit "This script must be run as root. Use 'sudo /usr/local/bin/firstboot.sh'";
+
+    clear;
     printf "=======================================\n";
     printf "   ARTIX POST-INSTALL WIZARD           \n";
     printf "=======================================\n";
@@ -206,6 +209,7 @@ function main {
     if _ask "All done. Remove wizard?" "y"; then
         touch /var/lib/artix-firstboot-done;
         rm -f /etc/profile.d/firstboot.sh;
+        printf "[*] Wizard removed. Reboot or logout to apply all changes.\n";
     fi
 }
 

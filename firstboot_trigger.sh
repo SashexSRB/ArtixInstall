@@ -16,10 +16,8 @@ function _ask {
 }
 
 function main {
-    [[ "${EUID}" -ne 0 ]] && return 0;
-    
     if [[ -f /var/lib/artix-firstboot-done ]]; then
-        rm -f /etc/profile.d/firstboot.sh 2>/dev/null;
+        [[ "${EUID}" -eq 0 ]] && rm -f /etc/profile.d/firstboot.sh 2>/dev/null;
         return 0;
     fi
 
@@ -40,13 +38,18 @@ function main {
     printf "=======================================\n\n";
 
     if _ask "Run setup now?" "y"; then
-        printf "[*] Launching firstboot script...\n";
-        exec /usr/local/bin/firstboot.sh;
+        printf "[*] Launching firstboot script...\n";o
+        if [[ "${EUID}" -eq 0 ]]; then
+            exec /usr/local/bin/firstboot.sh;
+        else
+            exec sudo /usr/local/bin/firstboot.sh;
+        fi
     else
         printf "[*] Skipping setup for now.\n";
         printf "[*] To prevent this prompt, create /var/lib/artix-firstboot-done\n";
         printf "    or run the wizard later from /usr/local/bin/firstboot.sh\n";
     fi
 }
+
 
 main;
