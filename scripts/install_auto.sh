@@ -165,11 +165,18 @@ function _run_basestrap {
     [[ "${BOOTLOADER}" == "grub" ]] && pkgs+=("grub" "os-prober") || pkgs+=("refind");
     basestrap /mnt "${pkgs[@]}";
 }
-
 function _finalize {
     local root_part uuid hooks cmdline_opts;
-    root_part=$(lsblk -np -o NAME "${DISK}" | sed -n '3p');
-    read -r uuid < <(blkid -s UUID -o value "${root_part}");
+
+    if [[ "${DISK}" =~ (nvme|mmcblk|loop) ]]; then
+        root_part="${DISK}p2";
+    else
+        root_part="${DISK}2";
+    fi
+
+    uuid=$(blkid -s UUID -o value "${root_part}") || _error_exit "Could not get UUID for ${root_part}";
+    
+    printf "[*] Generating fstab...\n";
     fstabgen -U /mnt >> /mnt/etc/fstab;
     
     hooks="base udev autodetect modconf block";
@@ -181,9 +188,11 @@ function _finalize {
     [[ "${FS_TYPE}" == "btrfs" ]] && cmdline_opts+=" rootflags=subvol=@";
     [[ "${USE_LUKS}" -eq 0 ]] && cmdline_opts="cryptdevice=UUID=${uuid}:${MAPPER_NAME} root=/dev/mapper/${MAPPER_NAME} ${cmdline_opts}";
 
+    printf "[*] Entering chroot for final configuration...\n";
     artix-chroot /mnt /bin/bash <<EOF
 sed -i "s/^HOOKS=(.*/HOOKS=(${hooks})/" /etc/mkinitcpio.conf;
 mkinitcpio -P;
+
 if [[ "${BOOTLOADER}" == "grub" ]]; then
     echo "GRUB_DISABLE_OS_PROBER=false" >> /etc/default/grub;
     sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=\"|GRUB_CMDLINE_LINUX_DEFAULT=\"${cmdline_opts} |" /etc/default/grub;
@@ -193,21 +202,23 @@ else
     refind-install;
     mkdir -p /boot/efi/EFI/refind/drivers_x64;
     cp /usr/share/refind/drivers_x64/btrfs_x64.efi /boot/efi/EFI/refind/drivers_x64/ 2>/dev/null || true;
+    
     local r_root;
     [[ "${USE_LUKS}" -eq 0 ]] && r_root="/dev/mapper/${MAPPER_NAME}" || r_root="UUID=${uuid}";
-    local r_initrd;
+    
     if [[ "${FS_TYPE}" == "btrfs" ]]; then
-        r_initrd="initrd=/@/boot/intel-ucode.img initrd=/@/boot/amd-ucode.img initrd=/@/boot/initramfs-linux.img";
+        printf "\"Boot Artix\" \"root=\${r_root} ${cmdline_opts} initrd=/@/boot/intel-ucode.img initrd=/@/boot/amd-ucode.img initrd=/@/boot/initramfs-linux.img\"\n" > /boot/refind_linux.conf;
     else
-        r_initrd="initrd=/boot/intel-ucode.img initrd=/boot/amd-ucode.img initrd=/boot/initramfs-linux.img";
+        printf "\"Boot Artix\" \"root=\${r_root} ${cmdline_opts} initrd=/boot/intel-ucode.img initrd=/boot/amd-ucode.img initrd=/boot/initramfs-linux.img\"\n" > /boot/refind_linux.conf;
     fi
-    printf "\"Boot Artix\" \"root=%s %s %s\"\n" "\${r_root}" "${cmdline_opts}" "\${r_initrd}" > /boot/refind_linux.conf;
 fi
-printf "root:%s" "${ROOTPASS}" | chpasswd;
+
+printf "root:${ROOTPASS}" | chpasswd;
+
 case "${INIT}" in
     openrc) rc-update add dhcpcd default; rc-update add iwd default ;;
-    runit)  ln -s /etc/runit/sv/dhcpcd /etc/runit/runsvdir/default/; ln -s /etc/runit/sv/iwd /etc/runit/runsvdir/default/ ;;
-    dinit)  mkdir -p /etc/dinit.d/boot.d; ln -s ../dhcpcd /etc/dinit.d/boot.d/; ln -s ../iwd /etc/dinit.d/boot.d/ ;;
+    runit)  ln -s /etc/runit/sv/dhcpcd /etc/runit/runsvdir/default/ 2>/dev/null || true; ln -s /etc/runit/sv/iwd /etc/runit/runsvdir/default/ 2>/dev/null || true ;;
+    dinit)  mkdir -p /etc/dinit.d/boot.d; ln -s ../dhcpcd /etc/dinit.d/boot.d/ 2>/dev/null || true; ln -s ../iwd /etc/dinit.d/boot.d/ 2>/dev/null || true ;;
 esac
 EOF
 }
