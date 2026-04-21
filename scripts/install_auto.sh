@@ -75,12 +75,13 @@ function _setup_encryption {
 
 function _ask_info {
     lsblk -dpno NAME,SIZE,MODEL | grep -E "/dev/(sd|vd|nvme|mmcblk)" || true
-    printf "Target Disk: "; read -r DISK;
+    printf "Target Disk: "; read -r DISK </dev/tty;
     [[ ! -b "${DISK}" ]] && _error_exit "invalid device";
     if ! _ask "Destroy all data on ${DISK}?" "n"; then _error_exit "aborted"; fi
-    printf "Root password: "; read -rs ROOTPASS; echo;
+    printf "Root password: "; read -rs ROOTPASS </dev/tty; echo;
     _ask "External/removable drive?" "n" && REMOVABLE_FLAG="--removable";
 }
+
 
 function _partition_storage {
     printf "[*] Partitioning storage (%s)...\n" "${FS_TYPE^^}";
