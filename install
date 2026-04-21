@@ -15,15 +15,10 @@ function _error_exit {
 }
 
 function _parse_docblock {
-    local esc;
-    printf -v esc "\033";
+    local esc; printf -v esc "\033";
     local help="${1}";
-
-    help="$(sed -nE "/^#\|/,/^$/s/^#\|[[:space:]]?//p" <<< "${help}")";
-    help="$(sed -E "s/^(.*)$/echo \"\1\";/g" <<< "${help}")";
-    help="$(eval "${help}")";
+    help="$(sed -E "s/^[[:space:]]*#\|[[:space:]]?//g" <<< "${help}")";
     help="$(sed -E "s/\{e:([0-9a-zA-Z;]+)\}/${esc}[\1/g" <<< "${help}")";
-
     printf "%s\n" "${help}";
 }
 
@@ -33,12 +28,13 @@ function _extract_docblock {
     local -a buffer=();
 
     while IFS= read -r line; do
-        if [[ "${line}" == *"#|"* ]]; then
-            buffer+=( "${line#*#|}" );
+        if [[ "${line}" =~ ^[[:space:]]*#\| ]]; then
+            buffer+=( "${line}" );
             continue;
         fi
-        if [[ "${line}" == *"function ${function_name} {"* ]]; then
-            printf -v docblock "%s\n" "${buffer[@]}";
+
+        if [[ "${line}" =~ "function ${function_name}" ]]; then
+            [[ ${#buffer[@]} -gt 0 ]] && printf -v docblock "%s\n" "${buffer[@]}";
             break;
         fi
         buffer=();
