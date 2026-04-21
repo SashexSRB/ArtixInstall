@@ -9,6 +9,7 @@ REMOVABLE_FLAG="";
 USE_LUKS=1;
 BOOTLOADER="grub";
 MAPPER_NAME="cryptroot";
+FS_TYPE="btrfs"; # BTRFS Set to default as of Major Refractor No.2
 
 SELF_PATH="${BASH_SOURCE}";
 [[ "${SELF_PATH}" != /* ]] && SELF_PATH="${PWD}/${SELF_PATH}";
@@ -36,7 +37,13 @@ function _ask {
 
 function _ensure_tools {
     printf "[*] Updating database and installing tools...\n";
-    pacman -Sy --noconfirm gptfdisk util-linux cryptsetup btrfs-progs efibootmgr;
+    pacman -Sy --noconfirm gptfdisk util-linux cryptsetup btrfs-progs e2fsprogs efibootmgr;
+}
+
+function _choose_fs {
+    printf "1) BTRFS (Subvolumes)  2) EXT4 (The Classic)\n";
+    printf "Filesystem: "; read -r fc;
+    [[ "${fc}" == "2" ]] && FS_TYPE="ext4" || FS_TYPE="btrfs";
 }
 
 function _choose_init {
@@ -76,7 +83,7 @@ function _ask_info {
 }
 
 function _partition_storage {
-    printf "[*] Partitioning and creating BTRFS subvolumes...\n";
+    printf "[*] Partitioning storage (%s)...\n" "${FS_TYPE^^}";
     wipefs -a "${DISK}";
     sgdisk --zap-all "${DISK}";
     sgdisk -n 1:0:+${EFI_SIZE}M -t 1:ef00 "${DISK}";
@@ -98,26 +105,34 @@ function _partition_storage {
         target_dev="/dev/mapper/${MAPPER_NAME}";
     fi
 
-    mkfs.btrfs -f "${target_dev}";
-    mount "${target_dev}" /mnt;
-    btrfs subvolume create /mnt/@;
-    btrfs subvolume create /mnt/@home;
-    btrfs subvolume create /mnt/@log;
-    btrfs subvolume create /mnt/@pkg;
-    umount /mnt;
+    if [[ "${FS_TYPE}" == "btrfs" ]]; then
+        mkfs.btrfs -f "${target_dev}";
+        mount "${target_dev}" /mnt;
+        btrfs subvolume create /mnt/@;
+        btrfs subvolume create /mnt/@home;
+        btrfs subvolume create /mnt/@log;
+        btrfs subvolume create /mnt/@pkg;
+        umount /mnt;
 
-    local m_opts="noatime,compress=zstd,ssd,discard=async";
-    mount -o "${m_opts},subvol=@" "${target_dev}" /mnt;
-    mount --mkdir -o "${m_opts},subvol=@home" "${target_dev}" /mnt/home;
-    mount --mkdir -o "${m_opts},subvol=@log" "${target_dev}" /mnt/var/log;
-    mount --mkdir -o "${m_opts},subvol=@pkg" "${target_dev}" /mnt/var/cache/pacman/pkg;
+        local m_opts="noatime,compress=zstd,ssd,discard=async";
+        mount -o "${m_opts},subvol=@" "${target_dev}" /mnt;
+        mount --mkdir -o "${m_opts},subvol=@home" "${target_dev}" /mnt/home;
+        mount --mkdir -o "${m_opts},subvol=@log" "${target_dev}" /mnt/var/log;
+        mount --mkdir -o "${m_opts},subvol=@pkg" "${target_dev}" /mnt/var/cache/pacman/pkg;
+    else
+        mkfs.ext4 -F "${target_dev}";
+        mount "${target_dev}" /mnt;
+    fi
+    
     mount --mkdir "${efi_p}" /mnt/boot/efi;
 }
 
 function _run_basestrap {
     local ucode="amd-ucode";
     [[ -f /proc/cpuinfo ]] && grep -q "GenuineIntel" /proc/cpuinfo && ucode="intel-ucode";
-    local pkgs=("base" "base-devel" "linux" "linux-firmware" "${ucode}" "${INIT}" "elogind-${INIT}" "efibootmgr" "dhcpcd" "dhcpcd-${INIT}" "iwd" "iwd-${INIT}" "btrfs-progs" "nano");
+    local pkgs=("base" "base-devel" "linux" "linux-firmware" "${ucode}" "${INIT}" "elogind-${INIT}" "efibootmgr" "dhcpcd" "dhcpcd-${INIT}" "iwd" "iwd-${INIT}" "nano");
+    
+    [[ "${FS_TYPE}" == "btrfs" ]] && pkgs+=("btrfs-progs");
     [[ "${USE_LUKS}" -eq 0 ]] && pkgs+=("cryptsetup");
     [[ "${BOOTLOADER}" == "grub" ]] && pkgs+=("grub" "os-prober") || pkgs+=("refind");
     
@@ -125,7 +140,7 @@ function _run_basestrap {
 }
 
 function _finalize {
-    local root_part uuid;
+    local root_part uuid hooks cmdline_opts;
     if [[ "${DISK}" == *nvme* ]]; then
         root_part="${DISK}p2";
     else
@@ -136,26 +151,29 @@ function _finalize {
     
     fstabgen -U /mnt >> /mnt/etc/fstab;
     
+    hooks="base udev";
+    [[ "${USE_LUKS}" -eq 0 ]] && hooks+=" encrypt";
+    [[ "${FS_TYPE}" == "btrfs" ]] && hooks+=" btrfs";
+    hooks+=" filesystems keyboard fsck";
+
+    cmdline_opts="rw";
+    [[ "${FS_TYPE}" == "btrfs" ]] && cmdline_opts+=" rootflags=subvol=@";
+    [[ "${USE_LUKS}" -eq 0 ]] && cmdline_opts="cryptdevice=UUID=${uuid}:${MAPPER_NAME} root=/dev/mapper/${MAPPER_NAME} ${cmdline_opts}";
+
     artix-chroot /mnt /bin/bash <<EOF
-sed -i 's/^HOOKS=(base udev/HOOKS=(base udev encrypt btrfs/' /etc/mkinitcpio.conf;
+sed -i "s/^HOOKS=(.*/HOOKS=(${hooks})/" /etc/mkinitcpio.conf;
 mkinitcpio -P;
 
 if [[ "${BOOTLOADER}" == "grub" ]]; then
     echo "GRUB_DISABLE_OS_PROBER=false" >> /etc/default/grub;
-    if [[ "${USE_LUKS}" -eq 0 ]]; then
-        sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=\"|GRUB_CMDLINE_LINUX_DEFAULT=\"cryptdevice=UUID=${uuid}:${MAPPER_NAME} root=/dev/mapper/${MAPPER_NAME} rootflags=subvol=@ |" /etc/default/grub;
-    else
-        sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=\"|GRUB_CMDLINE_LINUX_DEFAULT=\"rootflags=subvol=@ |" /etc/default/grub;
-    fi
+    sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=\"|GRUB_CMDLINE_LINUX_DEFAULT=\"${cmdline_opts} |" /etc/default/grub;
     grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=ARTIX --recheck ${REMOVABLE_FLAG};
     grub-mkconfig -o /boot/grub/grub.cfg;
 else
     refind-install;
-    if [[ "${USE_LUKS}" -eq 0 ]]; then
-        printf "\"Boot with LUKS\" \"cryptdevice=UUID=%s:%s root=/dev/mapper/%s rw rootflags=subvol=@ initrd=/boot/intel-ucode.img initrd=/boot/amd-ucode.img initrd=/boot/initramfs-linux.img\"\n" "${uuid}" "${MAPPER_NAME}" "${MAPPER_NAME}" > /boot/refind_linux.conf;
-    else
-        printf "\"Boot BTRFS\" \"root=UUID=%s rw rootflags=subvol=@ initrd=/boot/intel-ucode.img initrd=/boot/amd-ucode.img initrd=/boot/initramfs-linux.img\"\n" "${uuid}" > /boot/refind_linux.conf;
-    fi
+    printf "\"Boot Artix\" \"root=UUID=%s %s initrd=/boot/intel-ucode.img initrd=/boot/amd-ucode.img initrd=/boot/initramfs-linux.img\"\n" \
+        "$([[ "${USE_LUKS}" -eq 0 ]] && echo "/dev/mapper/${MAPPER_NAME}" || echo "${uuid}")" \
+        "${cmdline_opts}" > /boot/refind_linux.conf;
 fi
 
 printf "root:%s" "${ROOTPASS}" | chpasswd;
@@ -181,6 +199,7 @@ function _setup_handoff {
 function main {
     [[ ! -d /sys/firmware/efi ]] && _error_exit "no uefi";
     _ensure_tools;
+    _choose_fs;
     _choose_init;
     _choose_bootloader;
     _setup_encryption;
@@ -190,7 +209,7 @@ function main {
     _finalize;
     _setup_handoff;
     umount -R /mnt;
-    printf "Done. BTRFS system ready.\n";
+    printf "Done. %s system ready.\n" "${FS_TYPE^^}";
 }
 
 main;

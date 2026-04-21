@@ -83,7 +83,7 @@ function _run_basestrap {
 }
 
 function _finalize {
-    local root_dev real_dev uuid="" subvol_arg="";
+    local root_dev real_dev uuid="" subvol_arg="" current_mapper="";
     read -r root_dev < <(findmnt -no SOURCE /mnt);
 
     if [[ "${IS_BTRFS}" -eq 0 ]]; then
@@ -96,8 +96,8 @@ function _finalize {
     fi
 
     if [[ "${root_dev}" == /dev/mapper/* ]]; then
-        local mapper_name="${root_dev##*/}";
-        read -r real_dev < <(cryptsetup status "${mapper_name}" | awk '/device:/ {print $2}');
+        current_mapper="${root_dev##*/}";
+        read -r real_dev < <(cryptsetup status "${current_mapper}" | awk '/device:/ {print $2}');
         read -r uuid < <(blkid -s UUID -o value "${real_dev}");
     fi
 
@@ -114,23 +114,19 @@ mkinitcpio -P;
 
 if [[ "${BOOTLOADER}" == "grub" ]]; then
     echo "GRUB_DISABLE_OS_PROBER=false" >> /etc/default/grub;
-    cmd="";
-    [[ -n "${uuid}" ]] && cmd+="cryptdevice=UUID=${uuid}:${MAPPER_NAME} root=${root_dev} ";
+    cmd="rw ";
+    [[ -n "${uuid}" ]] && cmd+="cryptdevice=UUID=${uuid}:${current_mapper:-cryptroot} root=${root_dev} ";
     [[ -n "${subvol_arg}" ]] && cmd+="${subvol_arg} ";
     
-    if [[ -n "\${cmd}" ]]; then
-        sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=\"|GRUB_CMDLINE_LINUX_DEFAULT=\"\${cmd} |" /etc/default/grub;
-    fi
+    sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=\"|GRUB_CMDLINE_LINUX_DEFAULT=\"\${cmd}|" /etc/default/grub;
     grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=ARTIX --recheck ${REMOVABLE_FLAG};
     grub-mkconfig -o /boot/grub/grub.cfg;
 else
     refind-install;
-    if [[ -n "${uuid}" || -n "${subvol_arg}" ]]; then
-        params="";
-        [[ -n "${uuid}" ]] && params+="cryptdevice=UUID=${uuid}:${MAPPER_NAME} root=${root_dev} ";
-        [[ -n "${subvol_arg}" ]] && params+="${subvol_arg} ";
-        printf "\"Boot Custom\" \"%s rw initrd=/boot/intel-ucode.img initrd=/boot/amd-ucode.img initrd=/boot/initramfs-linux.img\"\n" "\${params}" > /boot/refind_linux.conf;
-    fi
+    params="rw ";
+    [[ -n "${uuid}" ]] && params+="cryptdevice=UUID=${uuid}:${current_mapper:-cryptroot} root=${root_dev} ";
+    [[ -n "${subvol_arg}" ]] && params+="${subvol_arg} ";
+    printf "\"Boot Artix\" \"%s initrd=/boot/intel-ucode.img initrd=/boot/amd-ucode.img initrd=/boot/initramfs-linux.img\"\n" "\${params}" > /boot/refind_linux.conf;
 fi
 
 printf "root:%s" "${ROOTPASS}" | chpasswd;
@@ -164,7 +160,9 @@ function main {
     _finalize;
     _setup_handoff;
     umount -R /mnt;
-    printf "Manual install complete. BTRFS/LUKS detected and configured.\n";
+    
+    local fs_msg="EXT4"; [[ "${IS_BTRFS}" -eq 0 ]] && fs_msg="BTRFS";
+    printf "Manual install complete. %s stack configured.\n" "${fs_msg}";
 }
 
 main;
